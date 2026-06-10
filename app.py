@@ -10,6 +10,7 @@ import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
 import streamlit as st
+import time
 
 # ================= CONFIG =================
 
@@ -124,6 +125,7 @@ with c2:
 # ================= RUN =================
 if run_clicked:
 
+    start_time = time.time()
     with st.spinner("Running DuckDB comparison…"):
 
         # ---------- VALIDATE UPLOADS ----------
@@ -139,6 +141,9 @@ if run_clicked:
             f.write(bo_parquet_upload.getbuffer())
         with open(ad_parquet, "wb") as f:
             f.write(admin_parquet_upload.getbuffer())
+        st.write(
+            f"Upload Save Time: {time.time() - start_time:.2f}s"
+             )
 
         
 
@@ -180,7 +185,7 @@ if run_clicked:
             ad_key,
             ad_bet,
             ad_win,
-            ad_refid
+            
         ]):
             st.error("❌ Required columns not found. Check source files.")
             st.write("BO Columns:", bo_cols)
@@ -189,6 +194,10 @@ if run_clicked:
 
         # ---------- DUCKDB ----------
         con = duckdb.connect()
+        if ad_refid:
+            own_ref_sql = f'MAX("{ad_refid}") AS OwnRefID,'
+        else:
+            own_ref_sql = "NULL AS OwnRefID,"
 
         # ================= BO VIEW =================
         con.execute(f"""
@@ -225,6 +234,10 @@ if run_clicked:
 
             GROUP BY Key
         """)
+        st.write(
+            f"BO View Time: {time.time() - start_time:.2f}s"
+             )
+
 
         # ================= ADMIN VIEW =================
         con.execute(f"""
@@ -233,7 +246,7 @@ if run_clicked:
             SELECT
                 TRIM("{ad_key}") AS Key,
 
-                MAX("{ad_refid}") AS OwnRefID,
+                {own_ref_sql}
 
                 SUM(
                     CAST(
@@ -261,6 +274,9 @@ if run_clicked:
 
             GROUP BY Key
         """)
+        st.write(
+             f"Admin View Time: {time.time() - start_time:.2f}s"
+            )
 
         # ================= MERGE =================
         merged = con.execute("""
@@ -300,6 +316,9 @@ if run_clicked:
             ON b.Key = a.Key
 
         """).fetchdf()
+        st.write(
+            f"Merge + Fetch Time: {time.time() - start_time:.2f}s"
+           )
 
         # ================= VARIANCE =================
         variance = merged[

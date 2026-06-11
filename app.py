@@ -299,7 +299,7 @@ if run_clicked:
                                   SELECT
                                   COALESCE(b.Key, a.Key) AS Key
                                   FROM bo b
-                                  FULL OUTER JOIN admin a
+                                  INNER JOIN admin a
                                   ON b.Key = a.Key
                                   )
                                   """).fetchone()[0]

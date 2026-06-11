@@ -194,10 +194,24 @@ if run_clicked:
 
         # ---------- DUCKDB ----------
         con = duckdb.connect()
+        
+        st.write(
+            "BO rows:",
+            con.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{bo_parquet}')"
+                ).fetchone()[0]
+        )
+        st.write(
+            "Admin rows:",
+            con.execute(
+                 f"SELECT COUNT(*) FROM read_parquet('{ad_parquet}')"
+                 ).fetchone()[0]
+        )
         if ad_refid:
             own_ref_sql = f'MAX("{ad_refid}") AS OwnRefID,'
         else:
             own_ref_sql = "NULL AS OwnRefID,"
+        
 
         # ================= BO VIEW =================
         con.execute(f"""
@@ -316,9 +330,16 @@ if run_clicked:
             ON b.Key = a.Key
 
         """).fetchdf()
+        st.write("Merged rows:", len(merged))
+
         st.write(
-            f"Merge + Fetch Time: {time.time() - start_time:.2f}s"
-           )
+                "Merged memory MB:",
+                round(
+                     merged.memory_usage(deep=True).sum()
+                     / 1024 / 1024,
+                     2
+                )
+            )
 
         # ================= VARIANCE =================
         variance = merged[

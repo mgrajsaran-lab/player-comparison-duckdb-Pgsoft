@@ -35,15 +35,10 @@ with c2:
 ADMIN_MUL = 1000 if MULTIPLY_ADMIN else 1
 BO_MUL = 1000 if MULTIPLY_BO else 1
 # ================= FILE UPLOADS =================
-bo_parquet_upload = st.file_uploader(
-    "Upload BO combined.parquet",
-    type=["parquet"]
-)
-
-admin_parquet_upload = st.file_uploader(
-    "Upload Admin combined.parquet",
-    type=["parquet"]
-)
+bo_parquet = "bo_combined.parquet"
+ad_parquet = "admin_combined.parquet"
+st.info(f"BO File: {bo_parquet}")
+st.info(f"Admin File: {ad_parquet}")
 
 # ================= UTILS =================
 def norm(s: str) -> str:
@@ -128,22 +123,13 @@ if run_clicked:
     start_time = time.time()
     with st.spinner("Running DuckDB comparison…"):
 
-        # ---------- VALIDATE UPLOADS ----------
-        if not bo_parquet_upload:
-            st.error("❌ Upload BO combined.parquet")
+        # ---------- VALIDATE FILES ----------
+        if not Path(bo_parquet).exists():
+            st.error(f"❌ File not found: {bo_parquet}")
             st.stop()
-        if not admin_parquet_upload:
-            st.error("❌ Upload Admin combined.parquet")
+        if not Path(ad_parquet).exists():
+            st.error(f"❌ File not found: {ad_parquet}")
             st.stop()
-        bo_parquet = "bo_combined.parquet"
-        ad_parquet = "admin_combined.parquet"
-        with open(bo_parquet, "wb") as f:
-            f.write(bo_parquet_upload.getbuffer())
-        with open(ad_parquet, "wb") as f:
-            f.write(admin_parquet_upload.getbuffer())
-        st.write(
-            f"Upload Save Time: {time.time() - start_time:.2f}s"
-             )
 
         
 

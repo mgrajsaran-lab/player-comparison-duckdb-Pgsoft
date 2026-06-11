@@ -17,7 +17,7 @@ import time
 
 EPS = 0.01
 MAX_EXCEL_ROWS = 900_000
-MAX_PREVIEW_ROWS = 50_000
+MAX_PREVIEW_ROWS = 1000
 
 # ================= STREAMLIT =================
 st.set_page_config(page_title="Player Comparison — DuckDB", layout="wide")
@@ -388,6 +388,16 @@ if run_clicked:
                 len(missing_in_bo),
             ]
         })
+        st.write("Variance rows:", len(variance))
+        st.write(
+            "Variance memory MB:",
+             round(
+                 variance.memory_usage(deep=True).sum()
+                 / 1024 / 1024,
+                  2
+             )
+        )
+        st.stop()
 
         # ================= STORE =================
         st.session_state["res"] = {

@@ -292,54 +292,21 @@ if run_clicked:
              f"Admin View Time: {time.time() - start_time:.2f}s"
             )
 
-        # ================= MERGE =================
-        merged = con.execute("""
+        # ================= MERGE TEST =================
+        merge_count = con.execute("""
+                                  SELECT COUNT(*)
+                                  FROM (
+                                  SELECT
+                                  COALESCE(b.Key, a.Key) AS Key
+                                  FROM bo b
+                                  FULL OUTER JOIN admin a
+                                  ON b.Key = a.Key
+                                  )
+                                  """).fetchone()[0]
+        st.write("Merged count:", merge_count)
+        st.success("Merge completed")
+        st.stop()
 
-            SELECT
-                COALESCE(b.Key, a.Key) AS Key,
-
-                a.OwnRefID AS "own ref id",
-
-                b.UserID AS "user id",
-
-                COALESCE(b.Bet_BO, 0) AS Bet_BO,
-
-                COALESCE(b.WinLoss_BO, 0) AS WinLoss_BO,
-
-                COALESCE(a.Bet_Admin, 0) AS Bet_Admin,
-
-                COALESCE(a.WinLoss_Admin, 0) AS WinLoss_Admin,
-
-                ROUND(
-                    COALESCE(b.Bet_BO, 0)
-                    -
-                    COALESCE(a.Bet_Admin, 0),
-                    2
-                ) AS Bet_Diff,
-
-                ROUND(
-                    COALESCE(b.WinLoss_BO, 0)
-                    -
-                    COALESCE(a.WinLoss_Admin, 0),
-                    2
-                ) AS WinLoss_Diff
-
-            FROM bo b
-
-            FULL OUTER JOIN admin a
-            ON b.Key = a.Key
-
-        """).fetchdf()
-        st.write("Merged rows:", len(merged))
-
-        st.write(
-                "Merged memory MB:",
-                round(
-                     merged.memory_usage(deep=True).sum()
-                     / 1024 / 1024,
-                     2
-                )
-            )
 
         # ================= VARIANCE =================
         variance = merged[

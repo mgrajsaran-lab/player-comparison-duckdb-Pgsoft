@@ -397,7 +397,7 @@ if run_clicked:
                   2
              )
         )
-        st.stop()
+       
 
         # ================= STORE =================
         st.session_state["res"] = {

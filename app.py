@@ -253,7 +253,7 @@ if run_clicked:
              )
 
 
-        # ================= ADMIN VIEW =================
+    # ================= ADMIN VIEW =================
         con.execute(f"""
             CREATE OR REPLACE TEMP VIEW admin AS
 
@@ -292,68 +292,107 @@ if run_clicked:
              f"Admin View Time: {time.time() - start_time:.2f}s"
             )
 
-        # ================= MERGE TEST =================
-        merge_count = con.execute("""
-                                  SELECT COUNT(*)
-                                  FROM (
-                                  SELECT
-                                  COALESCE(b.Key, a.Key) AS Key
-                                  FROM bo b
-                                  INNER JOIN admin a
-                                  ON b.Key = a.Key
-                                  )
-                                  """).fetchone()[0]
-        st.write("Merged count:", merge_count)
-        st.success("Merge completed")
-        st.stop()
+            # ================= MERGE TABLE =================
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE merged AS
+
+            SELECT
+                COALESCE(b.Key, a.Key) AS Key,
+
+                a.OwnRefID AS "own ref id",
+
+                b.UserID AS "user id",
+
+                COALESCE(b.Bet_BO, 0) AS Bet_BO,
+
+                COALESCE(b.WinLoss_BO, 0) AS WinLoss_BO,
+
+                COALESCE(a.Bet_Admin, 0) AS Bet_Admin,
+
+                COALESCE(a.WinLoss_Admin, 0) AS WinLoss_Admin,
+
+                ROUND(
+                    COALESCE(b.Bet_BO, 0)
+                    -
+                    COALESCE(a.Bet_Admin, 0),
+                    2
+                ) AS Bet_Diff,
+
+                ROUND(
+                    COALESCE(b.WinLoss_BO, 0)
+                    -
+                    COALESCE(a.WinLoss_Admin, 0),
+                    2
+                ) AS WinLoss_Diff
+
+            FROM bo b
+
+            FULL OUTER JOIN admin a
+            ON b.Key = a.Key
+        """)
+
+        merged_rows = con.execute("""
+            SELECT COUNT(*)
+            FROM merged
+        """).fetchone()[0]
+
+        st.write("Merged rows:", merged_rows)
+
+        # ================= VARIANCE TABLE =================
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE variance AS
+
+            SELECT *
+            FROM merged
+
+            WHERE
+                ABS(Bet_Diff) > {EPS}
+                OR
+                ABS(WinLoss_Diff) > {EPS}
+        """)
+
+        variance_rows = con.execute("""
+            SELECT COUNT(*)
+            FROM variance
+        """).fetchone()[0]
+
+        st.write("Variance rows:", variance_rows)
+
+        # ================= PREVIEW ONLY =================
+        variance = con.execute(f"""
+            SELECT *
+            FROM variance
+            LIMIT {MAX_PREVIEW_ROWS}
+        """).fetchdf()
+
+        # ================= MISSING IN ADMIN =================
+        missing_in_admin = con.execute("""
+            SELECT
+                Key AS Player,
+                Bet_BO AS "Bet (BO)",
+                WinLoss_BO AS "WinLoss (BO)"
+            FROM merged
+
+            WHERE
+                Bet_BO <> 0
+                AND Bet_Admin = 0
+        """).fetchdf()
+
+        # ================= MISSING IN BO =================
+        missing_in_bo = con.execute("""
+            SELECT
+                Key AS Player,
+                Bet_Admin AS "Bet (Admin)",
+                WinLoss_Admin AS "WinLoss (Admin)"
+            FROM merged
+
+            WHERE
+                Bet_Admin <> 0
+                AND Bet_BO = 0
+        """).fetchdf()
 
 
-        # ================= VARIANCE =================
-        variance = merged[
-            (merged["Bet_Diff"].abs() > EPS) |
-            (merged["WinLoss_Diff"].abs() > EPS)
-        ].copy()
-
-        variance = variance[
-            [
-                "Key",
-                "own ref id",
-                "user id",
-                "Bet_BO",
-                "WinLoss_BO",
-                "Bet_Admin",
-                "WinLoss_Admin",
-                "Bet_Diff",
-                "WinLoss_Diff"
-            ]
-        ]
-
-        # ================= MISSING =================
-        missing_in_admin = merged[
-            (merged["Bet_BO"] != 0) &
-            (merged["Bet_Admin"] == 0)
-        ][
-            ["Key", "Bet_BO", "WinLoss_BO"]
-        ].rename(
-            columns={
-                "Key": "Player",
-                "Bet_BO": "Bet (BO)",
-                "WinLoss_BO": "WinLoss (BO)"
-            }
-        )
-
-        missing_in_bo = merged[
-            (merged["Bet_Admin"] != 0) &
-            (merged["Bet_BO"] == 0)
-        ][
-            ["Key", "Bet_Admin", "WinLoss_Admin"]
-        ].rename(
-            columns={
-                "Key": "Player",
-                "Bet_Admin": "Bet (Admin)",
-                "WinLoss_Admin": "WinLoss (Admin)"
-            }
-        )
+    
 
         # ================= SUMMARY =================
         summary = pd.DataFrame({
@@ -368,23 +407,15 @@ if run_clicked:
             ],
 
             "Value": [
-                len(merged),
-                len(variance),
+                merged_rows,
+                variance_rows,
                 variance["Bet_Diff"].sum(),
                 variance["WinLoss_Diff"].sum(),
                 len(missing_in_admin),
                 len(missing_in_bo),
             ]
         })
-        st.write("Variance rows:", len(variance))
-        st.write(
-            "Variance memory MB:",
-             round(
-                 variance.memory_usage(deep=True).sum()
-                 / 1024 / 1024,
-                  2
-             )
-        )
+        
        
 
         # ================= STORE =================

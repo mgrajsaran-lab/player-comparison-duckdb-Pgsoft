@@ -1,418 +1,511 @@
-import sys
-from comparison_engine import (
-    run_comparison as run_engine,
-    build_engine
-)
-import os
+# app.py
+# FINAL DuckDB VERSION — FIXED USERID ISSUE
+
+import re
+import io
 import zipfile
+from pathlib import Path
+
 import duckdb
+import pandas as pd
+import pyarrow.parquet as pq
+import streamlit as st
+import time
 
-from PySide6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QLabel,
-    QPushButton,
-    QFileDialog,
-    QVBoxLayout,
-    QCheckBox,
-    QMessageBox
-)
+# ================= CONFIG =================
+
+
+EPS = 0.01
 MAX_EXCEL_ROWS = 900_000
+MAX_PREVIEW_ROWS = 1000
 
+# ================= STREAMLIT =================
+st.set_page_config(page_title="Player Comparison — DuckDB", layout="wide")
+st.title("🧮 Player Comparison — DuckDB powered")
 
-def export_dataframe(df, folder, base_name):
+# ======= MULTIPLIER OPTIONS =======
+c1, c2 = st.columns(2)
+
+with c1:
+    MULTIPLY_ADMIN = st.checkbox("Multiply Admin totals by 1000", value=False)
+
+with c2:
+    MULTIPLY_BO = st.checkbox("Multiply BO totals by 1000", value=False)
+
+ADMIN_MUL = 1000 if MULTIPLY_ADMIN else 1
+BO_MUL = 1000 if MULTIPLY_BO else 1
+# ================= FILE UPLOADS =================
+bo_parquet_upload = st.file_uploader(
+    "Upload BO combined.parquet",
+    type=["parquet"]
+)
+
+admin_parquet_upload = st.file_uploader(
+    "Upload Admin combined.parquet",
+    type=["parquet"]
+)
+
+# ================= UTILS =================
+def norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+def find_col_strict(cols, names, exclude=None):
+    exclude = exclude or []
+    want = {norm(x) for x in names}
+
+    for c in cols:
+        if norm(c) in want and not any(e.lower() in c.lower() for e in exclude):
+            return c
+
+    return None
+
+def make_download_asset(df: pd.DataFrame, base_name: str):
 
     if len(df) <= MAX_EXCEL_ROWS:
-
-        csv_path = os.path.join(
-            folder,
-            f"{base_name}.csv"
+        return (
+            df.to_csv(index=False).encode(),
+            f"{base_name}.csv",
+            "text/csv"
         )
 
-        df.to_csv(
-            csv_path,
-            index=False
-        )
+    buf = io.BytesIO()
 
-        return csv_path
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
 
-    zip_path = os.path.join(
-        folder,
-        f"{base_name}_split.zip"
+        for i, start in enumerate(range(0, len(df), MAX_EXCEL_ROWS), 1):
+
+            part = df.iloc[start:start + MAX_EXCEL_ROWS]
+
+            z.writestr(
+                f"{base_name}_part{i}.csv",
+                part.to_csv(index=False)
+            )
+
+    buf.seek(0)
+
+    return (
+        buf.read(),
+        f"{base_name}_split.zip",
+        "application/zip"
     )
 
-    with zipfile.ZipFile(
-        zip_path,
-        "w",
-        zipfile.ZIP_DEFLATED
-    ) as z:
 
-        for i, start in enumerate(
-            range(0, len(df), MAX_EXCEL_ROWS),
-            start=1
-        ):
 
-            part = df.iloc[
-                start:start + MAX_EXCEL_ROWS
-            ]
+def parquet_columns(path: Path):
+    return pq.ParquetFile(path).schema.names
 
-            csv_name = (
-                f"{base_name}_part{i}.csv"
-            )
+# ================= BUTTONS =================
+c1, c2 = st.columns(2)
 
-            temp_csv = os.path.join(
-                folder,
-                csv_name
-            )
+with c1:
+    run_clicked = st.button(
+        "Run comparison (DuckDB)",
+        type="primary"
+    )
 
-            part.to_csv(
-                temp_csv,
-                index=False
-            )
-
-            z.write(
-                temp_csv,
-                csv_name
-            )
-
-            os.remove(temp_csv)
-
-    return zip_path
-
-class PlayerComparisonUI(QWidget):
-
-    def __init__(self):
-        super().__init__()
-
-        self.bo_file = ""
-        self.admin_file = ""
-        self.result = None
-
-        self.setWindowTitle("Player Comparison")
-        self.resize(700, 450)
-
-        layout = QVBoxLayout()
-
-        self.bo_label = QLabel("BO File: Not Selected")
-        self.admin_label = QLabel("Admin File: Not Selected")
-
-        btn_bo = QPushButton("Browse BO Parquet")
-        btn_admin = QPushButton("Browse Admin Parquet")
-
-        btn_bo.clicked.connect(self.select_bo)
-        btn_admin.clicked.connect(self.select_admin)
-
-        self.chk_admin = QCheckBox("Multiply Admin totals by 1000")
-        self.chk_bo = QCheckBox("Multiply BO totals by 1000")
-
-        self.run_btn = QPushButton("Run Comparison")
-        self.run_btn.clicked.connect(self.run_comparison)
-
-        self.export_variance_btn = QPushButton("Export Variance CSV")
-        self.export_variance_btn.clicked.connect(
-            self.export_variance
-        )
-
-        self.export_admin_btn = QPushButton(
-            "Export Missing Admin CSV"
-        )
-        self.export_admin_btn.clicked.connect(
-            self.export_missing_admin
-        )
-
-        self.export_bo_btn = QPushButton(
-            "Export Missing BO CSV"
-        )
-        self.export_bo_btn.clicked.connect(
-            self.export_missing_bo
-        )
-
-        layout.addWidget(self.bo_label)
-        layout.addWidget(btn_bo)
-
-        layout.addWidget(self.admin_label)
-        layout.addWidget(btn_admin)
-
-        layout.addWidget(self.chk_admin)
-        layout.addWidget(self.chk_bo)
-
-        layout.addWidget(self.run_btn)
-
-        layout.addWidget(self.export_variance_btn)
-        layout.addWidget(self.export_admin_btn)
-        layout.addWidget(self.export_bo_btn)
-
-        self.setLayout(layout)
-    def select_bo(self):
-
-        file_name, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select BO Parquet",
-            "",
-            "Parquet Files (*.parquet)"
-        )
-
-        if file_name:
-            self.bo_file = file_name
-            self.bo_label.setText(
-                f"BO File: {file_name}"
-            )
-
-    def select_admin(self):
-
-        file_name, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Admin Parquet",
-            "",
-            "Parquet Files (*.parquet)"
-        )
-
-        if file_name:
-            self.admin_file = file_name
-            self.admin_label.setText(
-                f"Admin File: {file_name}"
-            )
-
-    def run_comparison(self):
-
-        if not self.bo_file:
-            QMessageBox.warning(
-                self,
-                "Missing File",
-                "Select BO parquet file"
-            )
-            return
-
-        if not self.admin_file:
-            QMessageBox.warning(
-                self,
-                "Missing File",
-                "Select Admin parquet file"
-            )
-            return
+with c2:
+    if st.button("🗑️ Clear All"):
 
         try:
-
-            self.result = run_engine(
-                self.bo_file,
-                self.admin_file,
-                multiply_bo=self.chk_bo.isChecked(),
-                multiply_admin=self.chk_admin.isChecked()
+            Path("bo_combined.parquet").unlink(
+                missing_ok=True
             )
 
-            summary = self.result["summary"]
-
-            QMessageBox.information(
-                self,
-                "Comparison Complete",
-                f"""
-Total Players : {summary['merged_rows']}
-
-Variance Rows : {summary['variance_rows']}
-
-Missing In Admin : {summary['missing_in_admin']}
-
-Missing In BO : {summary['missing_in_bo']}
-"""
+            Path("admin_combined.parquet").unlink(
+                missing_ok=True
             )
 
-        except Exception as e:
+        except:
+            pass
 
-            QMessageBox.critical(
-                self,
-                "Error",
-                str(e)
-            )
+        st.session_state.clear()
 
-    def export_variance(self):
+        st.rerun()
 
-        if not self.result:
-            QMessageBox.warning(
-                self,
-                "Run First",
-                "Run comparison first"
-            )
-            return
+# ================= RUN =================
+if run_clicked:
 
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select Export Folder"
+    start_time = time.time()
+    with st.spinner("Running DuckDB comparison…"):
+
+        # ---------- VALIDATE UPLOADS ----------
+        if not bo_parquet_upload:
+             st.error("❌ Upload BO combined.parquet")
+             st.stop()
+        if not admin_parquet_upload:
+            st.error("❌ Upload Admin combined.parquet")
+            st.stop()
+        bo_parquet = "bo_combined.parquet"
+        ad_parquet = "admin_combined.parquet"
+        with open(bo_parquet, "wb") as f:
+            f.write(bo_parquet_upload.getbuffer())
+        with open(ad_parquet, "wb") as f:
+            f.write(admin_parquet_upload.getbuffer())
+
+        # ---------- GET COLUMNS ----------
+        bo_cols = parquet_columns(bo_parquet)
+        ad_cols = parquet_columns(ad_parquet)
+
+        # ---------- BO COLUMNS ----------
+        bo_key = find_col_strict(bo_cols, ["Player"])
+        bo_bet = find_col_strict(bo_cols, ["Stakes"])
+        bo_win = find_col_strict(
+            bo_cols,
+            ["Player W/L"],
+            ["%", "percent"]
         )
 
-        if not folder:
-            return
+        # FIXED HERE
+        bo_userid = find_col_strict(bo_cols, ["Player"])
 
-        csv_path = os.path.join(
-            folder,
-            "variance.csv"
+        # ---------- ADMIN COLUMNS ----------
+        ad_key = find_col_strict(ad_cols, ["Agent Id"])
+
+        ad_bet = find_col_strict(ad_cols, ["Turnover"])
+
+        ad_win = find_col_strict(
+            ad_cols,
+            ["Member winlose", "Member winloss"],
+            ["%", "percent"]
         )
 
-        try:
+        ad_refid = find_col_strict(ad_cols, ["Own Ref ID"])
 
-            con = build_engine(
-                self.result["bo_parquet"],
-                self.result["admin_parquet"],
-                self.result["multiply_bo"],
-                self.result["multiply_admin"]
-            )
-
-            df = con.execute("""
-                
-                    SELECT *
-                    FROM variance
-                """).fetchdf()
-            output_file = export_dataframe(
-                df,
-                folder,
-                "variance"
-            )
-
-
-            con.close()
-
-            QMessageBox.information(
-                self,
-                "Export Complete",
-                f"Variance exported successfully.\n\n{output_file}"
-            )
-
-        except Exception as e:
-
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                str(e)
-            )
-
-    def export_missing_admin(self):
-
-        if not self.result:
-            QMessageBox.warning(
-                self,
-                "Run First",
-                "Run comparison first"
-            )
-            return
-
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select Export Folder"
-        )
-
-        if not folder:
-            return
-
-        csv_path = os.path.join(
-            folder,
-            "missing_in_admin.csv"
-        )
-
-        try:
-
-            con = build_engine(
-                self.result["bo_parquet"],
-                self.result["admin_parquet"],
-                self.result["multiply_bo"],
-                self.result["multiply_admin"]
-            )
-
-            df = con.execute("""
-                
-                    SELECT *
-                    FROM merged
-                    WHERE Bet_BO <> 0
-                    AND Bet_Admin = 0
-                """).fetchdf()
-            output_file = export_dataframe(
-                        df,
-                        folder,
-                        "missing_in_admin"
-                             )
+        # ---------- VALIDATION ----------
+        if not all([
+            bo_key,
+            bo_bet,
+            bo_win,
+            bo_userid,
+            ad_key,
+            ad_bet,
+            ad_win,
             
+        ]):
+            st.error("❌ Required columns not found. Check source files.")
+            st.write("BO Columns:", bo_cols)
+            st.write("ADMIN Columns:", ad_cols)
+            st.stop()
 
-            con.close()
-
-            QMessageBox.information(
-                self,
-                "Export Complete",
-                f"Missing Admin exported successfully.\n\n{output_file}"
-            )
-
-        except Exception as e:
-
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                str(e)
-            )
-
-    def export_missing_bo(self):
-
-        if not self.result:
-            QMessageBox.warning(
-                self,
-                "Run First",
-                "Run comparison first"
-            )
-            return
-
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select Export Folder"
+        # ---------- DUCKDB ----------
+        con = duckdb.connect()
+        
+        st.write(
+            "BO rows:",
+            con.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{bo_parquet}')"
+                ).fetchone()[0]
         )
-
-        if not folder:
-            return
-
-        csv_path = os.path.join(
-            folder,
-            "missing_in_bo.csv"
+        st.write(
+            "Admin rows:",
+            con.execute(
+                 f"SELECT COUNT(*) FROM read_parquet('{ad_parquet}')"
+                 ).fetchone()[0]
         )
+        if ad_refid:
+            own_ref_sql = f'MAX("{ad_refid}") AS OwnRefID,'
+        else:
+            own_ref_sql = "NULL AS OwnRefID,"
+        
 
-        try:
+        # ================= BO VIEW =================
+        con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW bo AS
 
-            con = build_engine(
-                self.result["bo_parquet"],
-                self.result["admin_parquet"],
-                self.result["multiply_bo"],
-                self.result["multiply_admin"]
+            SELECT
+                TRIM("{bo_key}") AS Key,
+
+                MAX("{bo_userid}") AS UserID,
+
+                SUM(
+                    CAST(
+                        regexp_replace(
+                            "{bo_bet}",
+                            '[^0-9.-]',
+                            '',
+                            'g'
+                        ) AS DOUBLE
+                    )
+                ) * {BO_MUL} AS Bet_BO,
+
+                SUM(
+                    CAST(
+                        regexp_replace(
+                            "{bo_win}",
+                            '[^0-9.-]',
+                            '',
+                            'g'
+                        ) AS DOUBLE
+                    )
+                ) * {BO_MUL} AS WinLoss_BO
+
+            FROM read_parquet('{bo_parquet}')
+
+            GROUP BY Key
+        """)
+        st.write(
+            f"BO View Time: {time.time() - start_time:.2f}s"
+             )
+
+
+    # ================= ADMIN VIEW =================
+        con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW admin AS
+
+            SELECT
+                TRIM("{ad_key}") AS Key,
+
+                {own_ref_sql}
+
+                SUM(
+                    CAST(
+                        regexp_replace(
+                            "{ad_bet}",
+                            '[^0-9.-]',
+                            '',
+                            'g'
+                        ) AS DOUBLE
+                    )
+                ) * {ADMIN_MUL} AS Bet_Admin,
+
+                SUM(
+                    CAST(
+                        regexp_replace(
+                            "{ad_win}",
+                            '[^0-9.-]',
+                            '',
+                            'g'
+                        ) AS DOUBLE
+                    )
+                ) * {ADMIN_MUL} AS WinLoss_Admin
+
+            FROM read_parquet('{ad_parquet}')
+
+            GROUP BY Key
+        """)
+        st.write(
+             f"Admin View Time: {time.time() - start_time:.2f}s"
             )
 
-            df = con.execute("""
-                
-                    SELECT *
-                    FROM merged
-                    WHERE Bet_Admin <> 0
-                    AND Bet_BO = 0
-                """).fetchdf()
-            output_file = export_dataframe(
-                    df,
-                    folder,
-                    "missing_in_bo"
-                )
-            
+            # ================= MERGE TABLE =================
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE merged AS
 
-            con.close()
+            SELECT
+                COALESCE(b.Key, a.Key) AS Key,
 
-            QMessageBox.information(
-                self,
-                "Export Complete",
-                f"Missing BO exported successfully.\n\n{output_file}"
-            )
+                a.OwnRefID AS "own ref id",
 
-        except Exception as e:
+                b.UserID AS "user id",
 
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                str(e)
-            )
+                COALESCE(b.Bet_BO, 0) AS Bet_BO,
+
+                COALESCE(b.WinLoss_BO, 0) AS WinLoss_BO,
+
+                COALESCE(a.Bet_Admin, 0) AS Bet_Admin,
+
+                COALESCE(a.WinLoss_Admin, 0) AS WinLoss_Admin,
+
+                ROUND(
+                    COALESCE(b.Bet_BO, 0)
+                    -
+                    COALESCE(a.Bet_Admin, 0),
+                    2
+                ) AS Bet_Diff,
+
+                ROUND(
+                    COALESCE(b.WinLoss_BO, 0)
+                    -
+                    COALESCE(a.WinLoss_Admin, 0),
+                    2
+                ) AS WinLoss_Diff
+
+            FROM bo b
+
+            FULL OUTER JOIN admin a
+            ON b.Key = a.Key
+        """)
+
+        merged_rows = con.execute("""
+            SELECT COUNT(*)
+            FROM merged
+        """).fetchone()[0]
+
+        st.write("Merged rows:", merged_rows)
+
+        # ================= VARIANCE TABLE =================
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE variance AS
+
+            SELECT *
+            FROM merged
+
+            WHERE
+                ABS(Bet_Diff) > {EPS}
+                OR
+                ABS(WinLoss_Diff) > {EPS}
+        """)
+
+        variance_rows = con.execute("""
+            SELECT COUNT(*)
+            FROM variance
+        """).fetchone()[0]
+
+        st.write("Variance rows:", variance_rows)
+
+        # ================= PREVIEW ONLY =================
+        variance = con.execute(f"""
+            SELECT *
+            FROM variance
+            LIMIT {MAX_PREVIEW_ROWS}
+        """).fetchdf()
+
+        # ================= MISSING IN ADMIN =================
+        missing_in_admin = con.execute("""
+            SELECT
+                Key AS Player,
+                Bet_BO AS "Bet (BO)",
+                WinLoss_BO AS "WinLoss (BO)"
+            FROM merged
+
+            WHERE
+                Bet_BO <> 0
+                AND Bet_Admin = 0
+        """).fetchdf()
+
+        # ================= MISSING IN BO =================
+        missing_in_bo = con.execute("""
+            SELECT
+                Key AS Player,
+                Bet_Admin AS "Bet (Admin)",
+                WinLoss_Admin AS "WinLoss (Admin)"
+            FROM merged
+
+            WHERE
+                Bet_Admin <> 0
+                AND Bet_BO = 0
+        """).fetchdf()
+
+
     
-if __name__ == "__main__":
 
-    app = QApplication(sys.argv)
+        # ================= SUMMARY =================
+        summary = pd.DataFrame({
 
-    window = PlayerComparisonUI()
-    window.show()
+            "Metric": [
+                "Total unique players (BO ∪ Admin)",
+                "Players with differences",
+                "Total Bet difference (BO - Admin)",
+                "Total WinLoss difference (BO - Admin)",
+                "Missing in Admin (present in BO only)",
+                "Missing in BO (present in Admin only)",
+            ],
 
-    sys.exit(app.exec())
+            "Value": [
+                merged_rows,
+                variance_rows,
+                con.execute(
+                     "SELECT COALESCE(SUM(Bet_Diff),0) FROM variance"
+                     ).fetchone()[0],
+                con.execute(
+                    "SELECT COALESCE(SUM(WinLoss_Diff),0) FROM variance"
+                    ).fetchone()[0],
+                len(missing_in_admin),
+                len(missing_in_bo),
+            ]
+        })
+        
+       
+
+        # ================= STORE =================
+        st.session_state["res"] = {
+            "summary": summary,
+            "variance": variance,
+            "missing_in_admin": missing_in_admin,
+            "missing_in_bo": missing_in_bo,
+        }
+        
+        
+
+# ================= DISPLAY =================
+if "res" in st.session_state:
+
+    r = st.session_state["res"]
+
+    st.subheader("Summary")
+
+    st.dataframe(
+        r["summary"],
+        use_container_width=True
+    )
+
+    st.markdown("### Variance (preview only)")
+
+    st.caption(
+        f"Showing first {MAX_PREVIEW_ROWS:,} rows"
+    )
+
+    st.dataframe(
+        r["variance"].head(MAX_PREVIEW_ROWS),
+        use_container_width=True
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        p, n, m = make_download_asset(
+            r["variance"],
+            "variance"
+        )
+
+        st.download_button(
+            "⬇️ variance",
+            p,
+            n,
+            m
+        )
+
+    with c2:
+        p, n, m = make_download_asset(
+            r["missing_in_admin"],
+            "missing_in_admin"
+        )
+
+        st.download_button(
+            "⬇️ missing_in_admin",
+            p,
+            n,
+            m
+        )
+
+    with c3:
+        p, n, m = make_download_asset(
+            r["missing_in_bo"],
+            "missing_in_bo"
+        )
+
+        st.download_button(
+            "⬇️ missing_in_bo",
+            p,
+            n,
+            m
+        )
+
+    st.markdown("### Missing in Admin (present in BO only)")
+
+    st.dataframe(
+        r["missing_in_admin"],
+        use_container_width=True
+    )
+
+    st.markdown("### Missing in BO (present in Admin only)")
+
+    st.dataframe(
+        r["missing_in_bo"],
+        use_container_width=True
+    )
+
+    st.success("Done — DuckDB powered 🚀")
+
+else:
+    st.info("Click Run comparison (DuckDB) to start.")

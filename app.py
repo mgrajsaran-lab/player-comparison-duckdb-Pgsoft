@@ -35,10 +35,15 @@ with c2:
 ADMIN_MUL = 1000 if MULTIPLY_ADMIN else 1
 BO_MUL = 1000 if MULTIPLY_BO else 1
 # ================= FILE UPLOADS =================
-bo_parquet = "bo_combined.parquet"
-ad_parquet = "admin_combined.parquet"
-st.info(f"BO File: {bo_parquet}")
-st.info(f"Admin File: {ad_parquet}")
+bo_parquet_upload = st.file_uploader(
+    "Upload BO combined.parquet",
+    type=["parquet"]
+)
+
+admin_parquet_upload = st.file_uploader(
+    "Upload Admin combined.parquet",
+    type=["parquet"]
+)
 
 # ================= UTILS =================
 def norm(s: str) -> str:
@@ -123,15 +128,19 @@ if run_clicked:
     start_time = time.time()
     with st.spinner("Running DuckDB comparison…"):
 
-        # ---------- VALIDATE FILES ----------
-        if not Path(bo_parquet).exists():
-            st.error(f"❌ File not found: {bo_parquet}")
+        # ---------- VALIDATE UPLOADS ----------
+        if not bo_parquet_upload:
+             st.error("❌ Upload BO combined.parquet")
+             st.stop()
+        if not admin_parquet_upload:
+            st.error("❌ Upload Admin combined.parquet")
             st.stop()
-        if not Path(ad_parquet).exists():
-            st.error(f"❌ File not found: {ad_parquet}")
-            st.stop()
-
-        
+        bo_parquet = "bo_combined.parquet"
+        ad_parquet = "admin_combined.parquet"
+        with open(bo_parquet, "wb") as f:
+            f.write(bo_parquet_upload.getbuffer())
+        with open(ad_parquet, "wb") as f:
+            f.write(admin_parquet_upload.getbuffer())
 
         # ---------- GET COLUMNS ----------
         bo_cols = parquet_columns(bo_parquet)
@@ -395,8 +404,12 @@ if run_clicked:
             "Value": [
                 merged_rows,
                 variance_rows,
-                variance["Bet_Diff"].sum(),
-                variance["WinLoss_Diff"].sum(),
+                con.execute(
+                     "SELECT COALESCE(SUM(Bet_Diff),0) FROM variance"
+                     ).fetchone()[0],
+                con.execute(
+                    "SELECT COALESCE(SUM(WinLoss_Diff),0) FROM variance"
+                    ).fetchone()[0],
                 len(missing_in_admin),
                 len(missing_in_bo),
             ]
@@ -411,11 +424,7 @@ if run_clicked:
             "missing_in_admin": missing_in_admin,
             "missing_in_bo": missing_in_bo,
         }
-        try:
-            Path(bo_parquet).unlink(missing_ok=True)
-            Path(ad_parquet).unlink(missing_ok=True)
-        except:
-            pass
+        
         
 
 # ================= DISPLAY =================
